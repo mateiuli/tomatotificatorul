@@ -12,7 +12,7 @@
 # FUSES ........ Parameters for avrdude to flash the fuses appropriately.
 
 DEVICE     = attiny13
-CLOCK      = 1200000
+CLOCK      = 1204508
 PROGRAMMER = -c usbasp 
 OBJECTS    = main.o
 FUSES      = -U lfuse:w:0x64:m -U hfuse:w:0xdd:m -U efuse:w:0xff:m

@@ -33,26 +33,32 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define TIMER_PERIOD_SEC     1 
-
-/* ((64/1200000 * 255 * 73) + (64/1200000 * 135))) = 1s
+/* ((64/1200000 * 256 * 73) + (64/1200000 * 135))) = 1s
  * 
  * This is close enough to 1s. The error for 24h is only 2.82s.
  * I can live with that.
  */
 
-#define TIMER_OVERFLOW_TICK  73
-#define TIMER_REMAINDER_TICK 135
-#define FULL_DAY_TICKS       ((uint16_t)3600 / TIMER_PERIOD_SEC * 24)
+// /8
+//#define TIMER_OVERFLOW_TICK  587
+//#define TIMER_REMAINDER_TICK 255
+// o ia inainte cu ~1s / ora 
+
+
+#define TIMER_OVERFLOW_TICK  (uint16_t)4705
+#define TIMER_REMAINDER_TICK 28
+
+#define HOURLY_ERROR_SEC     1
+#define FULL_DAY_TICKS       (((uint32_t)3600 + HOURLY_ERROR_SEC) * 24)
 
 /* This not not precise, it's just an estimation. 
  * Don't use it for precise scheduling. 
  */
 
 #define WATER_EVENT(hour, min, sec) \
-    ((uint16_t)3600 / TIMER_PERIOD_SEC * (hour) + \
-     (uint16_t)60 / TIMER_PERIOD_SEC * (min) + \
-     MAX((sec), TIMER_PERIOD_SEC) / TIMER_PERIOD_SEC)
+    ((uint32_t)3600 * (hour) + \
+     (uint32_t)60 * (min) + \
+     (sec))
 
 #define MAX(a, b)     ((a) > (b) ? (a) : (b))
 #define ARRAY_LEN(a) (sizeof(a) / sizeof(a[0]))
@@ -83,7 +89,7 @@ static void pump_water(uint8_t sec);
 
 /* Counts TIMER0 overflows. */
 
-static volatile uint8_t g_overflows;
+static volatile uint16_t g_overflows;
 
 /* Multiples of 16s since boot-up. */
 
@@ -100,24 +106,15 @@ static volatile bool g_water_plant;
  * the "systick" has a period of 16s.
  */
 
-static const uint16_t g_daily_events[] =
+static const uint32_t g_daily_events[] =
 {
     /* WATER_EVENT(hour, minute, second) */
 
-    WATER_EVENT(0, 0, 1), /* First event: immediately after boot-up. */ 
-    WATER_EVENT(0, 0, 15),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(0, 0, 30),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(0, 0, 45),  /* Second event: 7 hours after boot-up. */
+    WATER_EVENT(0, 0, 5),  /* Second event: 7 hours after boot-up. */
     WATER_EVENT(0, 1, 0),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(0, 2, 0),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(0, 3, 0),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(0, 4, 0),  /* Second event: 7 hours after boot-up. */
     WATER_EVENT(0, 5, 0),  /* Second event: 7 hours after boot-up. */
     WATER_EVENT(0, 10, 0),  /* Second event: 7 hours after boot-up. */
     WATER_EVENT(0, 30, 0),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(1, 0, 0),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(2, 0, 0),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(3, 0, 0),  /* Second event: 7 hours after boot-up. */
 };
 
 /****************************************************************************
@@ -255,8 +252,9 @@ static void timer_init(void)
 
     TCNT0 = 0;
     OCR0A = TIMER_REMAINDER_TICK;
-    TIMSK0 |= (1 << OCIE0A) | (1 << TOIE0);
-    TCCR0B |= (1 << CS01) | (1 << CS00);
+    TIMSK0 |= (1 << TOIE0); // | (1 << OCIE0A); 
+    //TCCR0A |= (1 << WGM01) | (1 << COM0A0);
+    TCCR0B |= (1 << CS00);
 }
 
 /****************************************************************************
@@ -277,6 +275,12 @@ static void timer_init(void)
 ISR(TIM0_OVF_vect)
 {
     g_overflows++;
+
+    if (g_overflows == TIMER_OVERFLOW_TICK)
+    {
+        TIMSK0 |= (1 << OCIE0A);
+        g_overflows = 0;
+    }
 }
 
 /****************************************************************************
@@ -296,35 +300,25 @@ ISR(TIM0_OVF_vect)
 
 ISR(TIM0_COMPA_vect)
 {
-    if (g_overflows == TIMER_OVERFLOW_TICK)
+    TIMSK0 &= ~(1 << OCIE0A);
+    g_ticks++;
+
+    /* Should we water the plants? */
+    
+    for (int i = 0; i < ARRAY_LEN(g_daily_events); i++)
     {
-        g_overflows = 0;
-        g_ticks++;
-
-        /* Should we water the plants? */
-        
-        for (int i = 0; i < ARRAY_LEN(g_daily_events); i++)
-        {
-            if (g_ticks == g_daily_events[i])
-            {
-                g_water_plant = true;
-                break;
-            }
-        }
-
-#if 0
-        if (g_ticks == FIRST_WATERING || 
-            g_ticks == SECOND_WATERING)
+        if (g_ticks == g_daily_events[i])
         {
             g_water_plant = true;
-        } 
-#endif 
-        if (g_ticks == FULL_DAY_TICKS)
-        {
-            /* 1 day has passed. */
-
-            g_ticks = 0;
+            break;
         }
+    }
+
+    if (g_ticks >= FULL_DAY_TICKS)
+    {
+        /* 1 day has passed. */
+
+        g_ticks = 0;
     }
 }
 
@@ -457,7 +451,7 @@ int main(void)
     while (true)
     {
         bool water = false;
-
+        
         cli();
         water = g_water_plant;
         sei();
