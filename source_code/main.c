@@ -44,9 +44,35 @@
 //#define TIMER_REMAINDER_TICK 255
 // o ia inainte cu ~1s / ora 
 
+#define PUMP_ON()  (PORTB |= (1 << PB0))
+#define PUMP_OFF() (PORTB &= ~(1 << PB0))
 
-#define TIMER_OVERFLOW_TICK  (uint16_t)4705
-#define TIMER_REMAINDER_TICK 28
+#define STATUS_LED_ON()     (PORTB |= (1 << PB2))
+#define STATUS_LED_OFF()    (PORTB &= ~(1 << PB2))
+#define STATUS_LED_TOGGLE() (PORTB ^= (1 << PB2))
+
+#define STATUS_LED_LOCK()   (g_led_lock = true)
+#define STATUS_LED_UNLOCK() (g_led_lock = false)
+#define STATUS_LED_LOCKED() (g_led_lock)
+
+/* If above this threshold, the battery is charging. */
+
+#define SOLAR_PANEL_THRESHOLD 538
+
+// /1 works really well after 1h
+// 1s in urma la 1h
+//#define TIMER_OVERFLOW_TICK  4709
+//#define TIMER_REMAINDER_TICK 196
+
+// -335 ticks == 277us/s = 1s la ora
+// 1205700Hz 
+
+#define TIMER_OVERFLOW_TICK  4708
+#define TIMER_REMAINDER_TICK 116
+
+//#define TIMER_OVERFLOW_TICK  588
+//#define TIMER_REMAINDER_TICK 184
+
 
 #define HOURLY_ERROR_SEC     1
 #define FULL_DAY_TICKS       (((uint32_t)3600 + HOURLY_ERROR_SEC) * 24)
@@ -81,7 +107,6 @@ static void status_led_init(void);
 static void timer_init(void);
 static void adc_init(void);
 static uint16_t adc_read(uint8_t channel);
-static void pump_water(uint8_t sec);
 
 /****************************************************************************
  * Private Data
@@ -100,6 +125,9 @@ static volatile uint32_t g_ticks;
  */
 
 static volatile bool g_water_plant;
+static volatile bool g_led_lock;
+
+static volatile uint8_t g_duration = 5;
 
 /* Add as many "water plant" events as you wish. 
  * Note that the timing is not perfect, it's an estimation, since 
@@ -108,13 +136,17 @@ static volatile bool g_water_plant;
 
 static const uint32_t g_daily_events[] =
 {
-    /* WATER_EVENT(hour, minute, second) */
+    /* WATER_EVENT(hour, minute, second).
+     * Important limitation:
+     *   If 24h wrap around happens when the pump is on, the pump
+     *   will not be stopped. To avoid this, do not add an event 
+     *   near the end of the day. 
+     */
 
     WATER_EVENT(0, 0, 5),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(0, 1, 0),  /* Second event: 7 hours after boot-up. */
     WATER_EVENT(0, 5, 0),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(0, 10, 0),  /* Second event: 7 hours after boot-up. */
     WATER_EVENT(0, 30, 0),  /* Second event: 7 hours after boot-up. */
+    WATER_EVENT(1, 0, 0),  /* Second event: 7 hours after boot-up. */
 };
 
 /****************************************************************************
@@ -252,8 +284,7 @@ static void timer_init(void)
 
     TCNT0 = 0;
     OCR0A = TIMER_REMAINDER_TICK;
-    TIMSK0 |= (1 << TOIE0); // | (1 << OCIE0A); 
-    //TCCR0A |= (1 << WGM01) | (1 << COM0A0);
+    TIMSK0 |= (1 << TOIE0); 
     TCCR0B |= (1 << CS00);
 }
 
@@ -298,28 +329,84 @@ ISR(TIM0_OVF_vect)
  *
  ****************************************************************************/
 
+
 ISR(TIM0_COMPA_vect)
 {
+    static volatile uint32_t pump_start_ticks = 0;
+   
+    /* This interrupt will be enabled again by the 
+     * overflow ISR, at the proper time. This way we 
+     * don't waste CPU cycles (and power).
+     *
+     * This function is called every second.
+     */
+
     TIMSK0 &= ~(1 << OCIE0A);
     g_ticks++;
 
-    /* Should we water the plants? */
+    /* Make sure there is no pumping in progress.
+     * We wouldn't want to flood the plants.
+     */
     
-    for (int i = 0; i < ARRAY_LEN(g_daily_events); i++)
+    if (pump_start_ticks == 0)
     {
-        if (g_ticks == g_daily_events[i])
+        if (g_water_plant)
         {
-            g_water_plant = true;
-            break;
+            /* Water was manually requested. */
+
+            g_water_plant = false;
+
+            /* Start pumping now. */
+
+            pump_start_ticks = g_ticks;
+        }
+        else 
+        {
+            /* Was water scheduled at this time? */
+
+            for (int i = 0; i < ARRAY_LEN(g_daily_events); i++)
+            {
+                if (g_ticks == g_daily_events[i])
+                {
+                    /* Start pumping now. */
+
+                    pump_start_ticks = g_ticks;
+                    break;
+                }
+            }
         }
     }
 
-    if (g_ticks >= FULL_DAY_TICKS)
+    if (pump_start_ticks == g_ticks)
     {
-        /* 1 day has passed. */
-
-        g_ticks = 0;
+        /* Start the pump. */
+        
+        PUMP_ON();
+        STATUS_LED_LOCK();
+        STATUS_LED_ON();
     }
+
+    if (pump_start_ticks != 0)
+    {
+        /* Pumping in progress. */
+
+        if (g_ticks >= pump_start_ticks + g_duration)
+        {
+            /* Stop the pump. */
+
+            PUMP_OFF();
+            STATUS_LED_OFF();
+            STATUS_LED_UNLOCK();
+
+            /* Pumping no longer in progress. */
+
+            pump_start_ticks = 0;
+        }
+    }
+
+    /* 1 day wrap around to avoid overflows. */
+
+    g_ticks = g_ticks % FULL_DAY_TICKS;
 }
 
 /****************************************************************************
@@ -395,39 +482,13 @@ static uint16_t adc_read(uint8_t channel)
 }
 
 /****************************************************************************
- * Name: pump_water
- *
- * Description:
- *   Turn the pump on for 'sec' seconds. 
- *
- * Input Parameters:
- *   sec - Pump ON duration (in seconds).
- *
- * Returned Value:
- *   None.
- *
- ****************************************************************************/
-
-static void pump_water(uint8_t sec)
-{
-    /* Pump 'sec' seconds of water. */
-
-    PORTB |= (1 << PB0);
-    
-    for (int i = 0; i < sec; i++)
-    {
-        _delay_ms(1000);
-    }
-
-    PORTB &= ~(1 << PB0);
-}
-
-/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
 int main(void)
 {
+    uint32_t prev_tick = 0;
+
     /* Initialize all subsystems. */
 
     pump_init();
@@ -450,14 +511,10 @@ int main(void)
 
     while (true)
     {
-        bool water = false;
-        
-        cli();
-        water = g_water_plant;
-        sei();
-
-        if (water)
+        if (g_ticks != prev_tick)
         {
+            prev_tick = g_ticks;
+
             /* Read the duration adjustment potentiometer. */
 
             uint32_t duration = adc_read(3);
@@ -471,12 +528,47 @@ int main(void)
              */
 
             duration = 55 * duration / 1023 + 5;
-
-            pump_water((uint16_t)duration);
             
-            /* Reset the flag set from interrupt. */
+            cli();
+            g_duration = duration;
+            sei();
 
-            g_water_plant = false;
+            /* Read the solar panel voltage. */
+
+            uint32_t solar_panel = adc_read(2);
+
+            /* R1 = 47K, R2 = 10K.
+             *
+             * Vref = R2 / (R1 + R2) * Vin
+             *
+             * Example:
+             *   a) Vin = 23V => Vref = 4.03V
+             *   b) Vin = 15V => Vref = 2.63V (battery charging)
+             *   c) Vin = 14V => Vref = 2.45V (battery not charging)
+             *
+             * ADC has a resolution of 10 bits:
+             *  2.63V ... X
+             *  5V    ... 1023
+             *  => X = 2.63V * 1023 / 5 = 538
+             *
+             */
+            
+            if (STATUS_LED_LOCKED())
+            {
+                /* The status LED is used for two purposes:
+                 *  a) 1s ON, 1s OFF, 1s ON... - during battery charging
+                 *  b) 'duration' seconds ON   - when pump is on
+                 *  
+                 * Duration adjustment has priority.
+                 */
+
+                if (solar_panel >= SOLAR_PANEL_THRESHOLD)
+                {
+                    /* Toggle the status LED while charging. */
+                    
+                    STATUS_LED_TOGGLE();
+                }
+            }
         }
 
         /* Save some power. */
