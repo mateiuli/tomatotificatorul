@@ -144,10 +144,8 @@ static const uint32_t g_daily_events[] =
      *   near the end of the day. 
      */
 
-    WATER_EVENT(0, 0, 5),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(0, 5, 0),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(0, 30, 0),  /* Second event: 7 hours after boot-up. */
-    WATER_EVENT(1, 0, 0),  /* Second event: 7 hours after boot-up. */
+    WATER_EVENT(0, 0, 5),  /* First event: 5s */
+    WATER_EVENT(7, 0, 0),  /* Second event: 7h */
 };
 
 /****************************************************************************
