@@ -57,7 +57,7 @@
 
 /* If above this threshold, the battery is charging. */
 
-#define SOLAR_PANEL_THRESHOLD 538
+#define SOLAR_PANEL_THRESHOLD 553
 
 // /1 works really well after 1h
 // 1s in urma la 1h
@@ -101,11 +101,11 @@
  * Private Function Prototypes
  ****************************************************************************/
 
-static void pump_init(void);
-static void water_button_init(void);
-static void status_led_init(void);
-static void timer_init(void);
-static void adc_init(void);
+static inline void pump_init(void);
+static inline void water_button_init(void);
+static inline void status_led_init(void);
+static inline void timer_init(void);
+static inline void adc_init(void);
 static uint16_t adc_read(uint8_t channel);
 
 /****************************************************************************
@@ -125,6 +125,7 @@ static volatile uint32_t g_ticks;
  */
 
 static volatile bool g_water_plant;
+static volatile bool g_water_button;
 static volatile bool g_led_lock;
 
 static volatile uint8_t g_duration = 5;
@@ -167,7 +168,7 @@ static const uint32_t g_daily_events[] =
  *
  ****************************************************************************/
 
-static void pump_init(void)
+static inline void pump_init(void)
 {
     /* Output pin:
      *   0: pump off
@@ -193,7 +194,7 @@ static void pump_init(void)
  *
  ****************************************************************************/
 
-static void water_button_init(void)
+static inline void water_button_init(void)
 {
     /* Configure INT0 for this button. 
      *   - input pin
@@ -214,7 +215,7 @@ static void water_button_init(void)
  *
  * Description:
  *   ISR for INT0 - Water button. It is configured to trigger on the 
- *   falling edge. It sets the 'g_water_plant' flag to schedule an 
+ *   falling edge. It sets the 'g_water_button' flag to schedule an 
  *   immediate event.
  *
  * Input Parameters:
@@ -227,7 +228,7 @@ static void water_button_init(void)
 
 ISR(INT0_vect)
 {
-    g_water_plant = true;
+    g_water_button = true;
 }
 
 /****************************************************************************
@@ -244,7 +245,7 @@ ISR(INT0_vect)
  *
  ****************************************************************************/
 
-static void status_led_init(void)
+static inline void status_led_init(void)
 {
     /* Output pin; default off.
      * 
@@ -252,10 +253,7 @@ static void status_led_init(void)
      * for few seconds.
      */
 
-    DDRB  |= (1 << PB2);
-    PORTB |= (1 << PB2);
-    //_delay_ms(2000);
-    PORTB &= ~(1 << PB2);
+    DDRB |= (1 << PB2);
 }
 
 /****************************************************************************
@@ -273,7 +271,7 @@ static void status_led_init(void)
  *
  ****************************************************************************/
 
-static void timer_init(void)
+static inline void timer_init(void)
 {
     /* 16s period:
      *   - 61 overflows
@@ -424,7 +422,7 @@ ISR(TIM0_COMPA_vect)
  *
  ****************************************************************************/
 
-static void adc_init(void)
+static inline void adc_init(void)
 {
     DDRB &= ~((1 << PB3) | (1 << PB4));
     
@@ -515,6 +513,15 @@ int main(void)
         {
             prev_tick = g_ticks;
 
+            /* Debounce water button. */
+
+            if (g_water_button && 
+                (PINB & (1 << PB1)) == 0)
+            {
+                g_water_plant = true;
+                g_water_button = false;
+            }
+
             /* Read the duration adjustment potentiometer. */
 
             uint32_t duration = adc_read(3);
@@ -542,18 +549,19 @@ int main(void)
              * Vref = R2 / (R1 + R2) * Vin
              *
              * Example:
-             *   a) Vin = 23V => Vref = 4.03V
-             *   b) Vin = 15V => Vref = 2.63V (battery charging)
-             *   c) Vin = 14V => Vref = 2.45V (battery not charging)
+             *   a) Vin = 23V   => Vref = 4.03V (charging)
+             *   b) Vin = 15.4V => Vref = 2.70V (charging) 
+             *   c) Vin = 15V   => Vref = 2.63V (battery not charging)
+             *   d) Vin = 14V   => Vref = 2.45V (battery not charging)
              *
              * ADC has a resolution of 10 bits:
-             *  2.63V ... X
+             *  2.70V ... X
              *  5V    ... 1023
-             *  => X = 2.63V * 1023 / 5 = 538
+             *  => X = 2.70V * 1023 / 5 = 553
              *
              */
             
-            if (STATUS_LED_LOCKED())
+            if (!STATUS_LED_LOCKED())
             {
                 /* The status LED is used for two purposes:
                  *  a) 1s ON, 1s OFF, 1s ON... - during battery charging
