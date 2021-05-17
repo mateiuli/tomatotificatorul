@@ -574,6 +574,10 @@ int main(void)
                     
                     STATUS_LED_TOGGLE();
                 }
+                else 
+                {
+                    STATUS_LED_OFF();
+                }
             }
         }
 
