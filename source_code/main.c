@@ -67,7 +67,7 @@
 // -335 ticks == 277us/s = 1s la ora
 // 1205700Hz 
 
-#define TIMER_OVERFLOW_TICK  4708
+#define TIMER_OVERFLOW_TICK  4633
 #define TIMER_REMAINDER_TICK 116
 
 //#define TIMER_OVERFLOW_TICK  588
@@ -144,8 +144,11 @@ static const uint32_t g_daily_events[] =
      *   near the end of the day. 
      */
 
-    WATER_EVENT(0, 0, 5),  /* First event: 5s */
-    WATER_EVENT(7, 0, 0),  /* Second event: 7h */
+    WATER_EVENT(0, 0, 5),   /* First event - 1st part: 5s */
+    WATER_EVENT(0, 1, 30),  /* First event - 2nd part: 1min 30s */
+
+    WATER_EVENT(7, 0, 0),   /* Second event - 1st part: 7h */
+    WATER_EVENT(7, 1, 30),  /* Second event - 2nd part: 7h 1min 30s */
 };
 
 /****************************************************************************
